@@ -25,6 +25,8 @@ from rich.text import Text
 
 from src.markets import fetch_active_markets, fetch_market_orderbook, filter_markets
 from src.storage import save_snapshot, load_latest_snapshot, save_analysis, load_latest_analysis
+from src.betting import recommend_bet
+from src.portfolio import load_portfolio, open_position, close_position, portfolio_summary
 
 console = Console(width=160)
 
@@ -350,6 +352,195 @@ def cmd_edges(args):
     )
 
 
+def cmd_recommend(args):
+    from pathlib import Path
+    import glob
+
+    snapshots = sorted(glob.glob("data/snapshots/analyzed_*.json"))
+    if not snapshots:
+        console.print("[yellow]No analysis found. Run `scan` first.[/]")
+        return
+
+    import json
+    with open(snapshots[-1]) as f:
+        analyzed_list = json.load(f)
+
+    recommendations = []
+    for item in analyzed_list:
+        rec = recommend_bet(item, item, args.bankroll)
+        if rec and abs(rec["edge"]) >= args.min_edge:
+            recommendations.append(rec)
+
+    recommendations.sort(key=lambda r: abs(r["edge"]), reverse=True)
+
+    if not recommendations:
+        console.print(f"[yellow]No bets meet criteria (min_edge={args.min_edge:.0%}).[/]")
+        return
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold magenta",
+        title=f"[bold]Recommendations[/] — {len(recommendations)} bets",
+        title_style="bold white",
+    )
+    table.add_column("Rank", justify="right", width=4, no_wrap=True)
+    table.add_column("Question", min_width=40, max_width=52, no_wrap=True)
+    table.add_column("Dir", min_width=9, no_wrap=True)
+    table.add_column("Mkt%", justify="right", min_width=6, no_wrap=True)
+    table.add_column("Mdl%", justify="right", min_width=6, no_wrap=True)
+    table.add_column("Edge", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Amount", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Conf", min_width=6, no_wrap=True)
+    table.add_column("Rationale", min_width=28, no_wrap=True)
+
+    for rank, r in enumerate(recommendations, 1):
+        color = "green" if r["direction"] == "BUY_YES" else "red"
+        q = r["question"] or ""
+        if len(q) > 52:
+            q = q[:49] + "..."
+        rationale = r.get("rationale", "")
+        if len(rationale) > 55:
+            rationale = rationale[:52] + "..."
+        table.add_row(
+            str(rank),
+            q,
+            Text(r["direction"], style=f"bold {color}"),
+            _fmt_pct(r["market_prob"]),
+            _fmt_pct(r["model_prob"]),
+            Text(f"{r['edge']*100:+.1f}pp", style=color),
+            f"${r['amount']:.2f}",
+            r["confidence"],
+            rationale,
+        )
+
+    console.print(table)
+    console.print(f"[dim]Bankroll: ${args.bankroll:.0f} · Use `paper-bet <market_id> --direction DIR --amount AMT` to place.[/]")
+
+
+def cmd_paper_bet(args):
+    import glob, json
+
+    snapshots = sorted(glob.glob("data/snapshots/analyzed_*.json"))
+    if not snapshots:
+        console.print("[yellow]No analysis found. Run `scan` first.[/]")
+        return
+
+    with open(snapshots[-1]) as f:
+        analyzed_list = json.load(f)
+
+    market = next((m for m in analyzed_list if m.get("market_id") == args.market_id), None)
+    if not market:
+        console.print(f"[red]Market {args.market_id!r} not found in latest snapshot.[/]")
+        return
+
+    model_prob = market.get("model_prob") or market.get("yes_price", 0)
+    market_prob = market.get("yes_price", 0)
+    edge = model_prob - market_prob
+
+    rec = {
+        "market_id": args.market_id,
+        "question": market.get("question", ""),
+        "direction": args.direction,
+        "model_prob": model_prob,
+        "market_prob": market_prob,
+        "edge": edge,
+        "kelly_fraction": 0.0,
+        "amount": args.amount,
+        "confidence": market.get("confidence", "low"),
+        "rationale": market.get("rationale", ""),
+    }
+
+    portfolio = load_portfolio()
+    if portfolio["bankroll"] < args.amount:
+        console.print(f"[red]Insufficient bankroll: ${portfolio['bankroll']:.2f} < ${args.amount:.2f}[/]")
+        return
+
+    pos = open_position(portfolio, rec)
+    console.print(
+        f"[bold green]Position opened![/]\n"
+        f"  ID:        [cyan]{pos['id']}[/]\n"
+        f"  Question:  {pos['question'][:60]}\n"
+        f"  Direction: [bold]{pos['direction']}[/]\n"
+        f"  Amount:    ${pos['amount']:.2f} @ {_fmt_pct(pos['entry_price'])}\n"
+        f"  Bankroll:  ${portfolio['bankroll']:.2f} remaining"
+    )
+
+
+def cmd_portfolio(args):
+    portfolio = load_portfolio()
+    summary = portfolio_summary(portfolio)
+
+    console.print(
+        Panel(
+            f"  Bankroll:       [bold green]${summary['bankroll']:.2f}[/]\n"
+            f"  Open positions: {summary['open_count']}\n"
+            f"  Closed:         {summary['closed_count']}\n"
+            f"  Total P&L:      [{'green' if summary['total_pnl'] >= 0 else 'red'}]{summary['total_pnl']:+.2f}[/]\n"
+            f"  Open exposure:  ${summary['open_exposure']:.2f}",
+            title="[bold magenta]Portfolio Summary[/]",
+            expand=False,
+        )
+    )
+
+    open_positions = [p for p in portfolio["positions"] if p["status"] == "open"]
+    if not open_positions:
+        console.print("[dim]No open positions.[/]")
+        return
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold magenta",
+        title="[bold]Open Positions[/]",
+    )
+    table.add_column("ID", width=8, no_wrap=True)
+    table.add_column("Question", min_width=40, max_width=52, no_wrap=True)
+    table.add_column("Dir", min_width=9, no_wrap=True)
+    table.add_column("Amount", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Entry%", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Model%", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Edge", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Opened", min_width=10, no_wrap=True)
+
+    for pos in open_positions:
+        color = "green" if pos["direction"] == "BUY_YES" else "red"
+        q = pos["question"]
+        if len(q) > 52:
+            q = q[:49] + "..."
+        opened = pos["opened_at"][:10] if pos.get("opened_at") else "-"
+        table.add_row(
+            pos["id"][:8],
+            q,
+            Text(pos["direction"], style=f"bold {color}"),
+            f"${pos['amount']:.2f}",
+            _fmt_pct(pos.get("entry_price")),
+            _fmt_pct(pos.get("model_prob")),
+            Text(f"{pos['edge']*100:+.1f}pp", style=color),
+            opened,
+        )
+
+    console.print(table)
+
+
+def cmd_resolve(args):
+    portfolio = load_portfolio()
+    try:
+        pos = close_position(portfolio, args.position_id, args.outcome, args.exit_price)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        return
+
+    color = "green" if pos["pnl"] >= 0 else "red"
+    console.print(
+        f"[bold]Position resolved.[/]\n"
+        f"  ID:       {pos['id'][:8]}\n"
+        f"  Outcome:  {args.outcome.upper()}\n"
+        f"  P&L:      [{color}]{pos['pnl']:+.2f}[/{color}]\n"
+        f"  Bankroll: ${portfolio['bankroll']:.2f}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="polymarket-intel",
@@ -393,6 +584,27 @@ def main():
     p_edges.add_argument("--confidence", choices=["low", "medium", "high"], default="low",
                          help="Minimum confidence level (default low)")
 
+    # recommend
+    p_rec = sub.add_parser("recommend", help="Show bet recommendations from latest analysis")
+    p_rec.add_argument("--bankroll", type=float, default=1000.0, help="Bankroll in USD (default 1000)")
+    p_rec.add_argument("--min-edge", type=float, default=0.08, metavar="N",
+                       help="Minimum absolute edge (default 0.08 = 8pp)")
+
+    # paper-bet
+    p_pb = sub.add_parser("paper-bet", help="Open a paper trade position")
+    p_pb.add_argument("market_id", help="Polymarket condition ID")
+    p_pb.add_argument("--direction", choices=["BUY_YES", "BUY_NO"], required=True)
+    p_pb.add_argument("--amount", type=float, required=True, help="Dollar amount to bet")
+
+    # portfolio
+    sub.add_parser("portfolio", help="Show portfolio summary and open positions")
+
+    # resolve
+    p_res = sub.add_parser("resolve", help="Close a position with outcome")
+    p_res.add_argument("position_id", help="Position ID or 8-char prefix")
+    p_res.add_argument("--outcome", choices=["YES", "NO"], required=True)
+    p_res.add_argument("--exit-price", type=float, required=True, dest="exit_price")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -401,6 +613,10 @@ def main():
         "snapshot": cmd_snapshot,
         "scan": cmd_scan,
         "edges": cmd_edges,
+        "recommend": cmd_recommend,
+        "paper-bet": cmd_paper_bet,
+        "portfolio": cmd_portfolio,
+        "resolve": cmd_resolve,
     }
     dispatch[args.command](args)
 

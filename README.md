@@ -41,7 +41,7 @@ python -m src.cli scan --limit 10 --min-volume 50000 --min-yes-price 0.05 --max-
 python -m src.cli edges --min-edge 0.05 --confidence medium
 ```
 
-### 🔲 Phase 3 — Paper Trading (next)
+### ✅ Phase 3 — Paper Trading (done)
 - `src/betting.py` — Kelly criterion position sizing (quarter-Kelly, capped at $50/position)
   - `kelly_fraction(edge, model_prob, market_prob)`
   - `recommend_bet(market, analyzed, bankroll)` — min 8pp edge + medium/high confidence
