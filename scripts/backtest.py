@@ -29,14 +29,18 @@ def fetch_resolved_markets(days_back=90, min_volume=10000, limit=50):
 
     r = requests.get(
         "https://gamma-api.polymarket.com/events",
-        params={"closed": "true", "limit": 100, "order": "volume", "ascending": "false"},
+        params={"closed": "true", "limit": 300, "order": "volume", "ascending": "false"},
     )
     r.raise_for_status()
     events = r.json()
 
     markets = []
     for event in events:
-        for m in event.get("markets", []):
+        # Take at most ONE market per event to avoid correlated batches
+        # (e.g. all 32 "Will [team] win Super Bowl" from the same event)
+        event_markets = event.get("markets", [])
+        added_for_event = 0
+        for m in event_markets:
             op = m.get("outcomePrices", [])
             try:
                 prices = [float(p) for p in (op if isinstance(op, list) else json.loads(op))]
@@ -76,6 +80,8 @@ def fetch_resolved_markets(days_back=90, min_volume=10000, limit=50):
                 "yes_price": None,  # blind test — do not leak resolved price
                 "actual_outcome": actual_outcome,
             })
+            added_for_event += 1
+            break  # one market per event — prevents correlated batches
 
             if len(markets) >= limit:
                 return markets

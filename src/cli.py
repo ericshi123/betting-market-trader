@@ -353,17 +353,10 @@ def cmd_edges(args):
 
 
 def cmd_recommend(args):
-    from pathlib import Path
-    import glob
-
-    snapshots = sorted(glob.glob("data/snapshots/analyzed_*.json"))
-    if not snapshots:
+    analyzed_list = load_latest_analysis()
+    if not analyzed_list:
         console.print("[yellow]No analysis found. Run `scan` first.[/]")
         return
-
-    import json
-    with open(snapshots[-1]) as f:
-        analyzed_list = json.load(f)
 
     recommendations = []
     for item in analyzed_list:
@@ -419,15 +412,10 @@ def cmd_recommend(args):
 
 
 def cmd_paper_bet(args):
-    import glob, json
-
-    snapshots = sorted(glob.glob("data/snapshots/analyzed_*.json"))
-    if not snapshots:
+    analyzed_list = load_latest_analysis()
+    if not analyzed_list:
         console.print("[yellow]No analysis found. Run `scan` first.[/]")
         return
-
-    with open(snapshots[-1]) as f:
-        analyzed_list = json.load(f)
 
     market = next((m for m in analyzed_list if m.get("market_id") == args.market_id), None)
     if not market:
