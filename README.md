@@ -53,10 +53,18 @@ python -m src.cli edges --min-edge 0.05 --confidence medium
   - `portfolio`
   - `resolve <position_id> --outcome YES --price 0.95`
 
-### 🔲 Phase 4 — Automation + JoJo Integration (planned)
-- Daily automated scan → JoJo surfaces top edges to Xintong via Telegram
-- Xintong approves → execution logged
-- P&L dashboard on personal website (xintongshi.dev)
+### ✅ Phase 4 — Automation + JoJo Integration (in progress)
+- `scripts/daily_scan.py` — runs scan + recommend pipeline, saves structured report to `data/reports/YYYY-MM-DD.json`
+- OpenClaw cron job triggers daily scan and delivers top edges to Xintong via Telegram
+- Approval flow: Xintong replies to approve → JoJo logs paper trade automatically
+- P&L dashboard on personal website (xintongshi.dev) — Phase 4b, separate task
+
+### 🔲 Phase 5 — Live Trading (planned, gate: 30+ resolved paper positions with positive edge)
+- Authenticate with Polymarket CLOB API (wallet + USDC)
+- `src/executor.py` — submit real limit orders via CLOB API
+- Safety rails: max position size, daily loss limit, kill switch
+- Approval flow: JoJo surfaces bet → Xintong confirms → executor places order
+- Track real P&L alongside paper P&L for comparison
 
 ---
 
