@@ -59,12 +59,20 @@ python -m src.cli edges --min-edge 0.05 --confidence medium
 - Approval flow: Xintong replies to approve → JoJo logs paper trade automatically
 - P&L dashboard on personal website (xintongshi.dev) — Phase 4b, separate task
 
-### 🔲 Phase 5 — Live Trading (planned, gate: 30+ resolved paper positions with positive edge)
-- Authenticate with Polymarket CLOB API (wallet + USDC)
-- `src/executor.py` — submit real limit orders via CLOB API
-- Safety rails: max position size, daily loss limit, kill switch
-- Approval flow: JoJo surfaces bet → Xintong confirms → executor places order
-- Track real P&L alongside paper P&L for comparison
+### ✅ Phase 5 — Live Trading (built, gated on paper trading validation)
+- `src/executor.py` — limit order placement via CLOB API (`place_order`, `cancel_order`, `cancel_all_orders`, `get_usdc_balance`)
+- `src/safety.py` — kill switch, daily loss limit ($200 default), max position size ($100 default)
+  - Custom exceptions: `KillSwitchError`, `DailyLossLimitError`, `PositionSizeError`
+  - Kill switch auto-activates if daily loss limit is breached
+  - State persisted in `data/live_state.json`
+- `src/live_portfolio.py` — live trade ledger in `data/live_portfolio.json` (mirrors paper portfolio, adds `order_id` field)
+- `src/cli.py` additions:
+  - `live-bet <market_id> --direction BUY_YES|BUY_NO --amount N` — dry-run preview
+  - `live-bet <market_id> --direction BUY_YES|BUY_NO --amount N --confirm` — place real order
+  - `live-portfolio` — show live positions and P&L
+  - `live-resolve <position_id> --outcome YES|NO --exit-price N` — close position, record P&L
+  - `kill-switch [--activate [--reason "text"] | --deactivate]` — emergency stop
+  - `live-status` — kill switch state, daily P&L, USDC balance
 
 ---
 
@@ -96,24 +104,99 @@ python -m src.cli portfolio
 python -m src.cli resolve <position_id> --outcome YES --price 0.95
 ```
 
+## Going Live (Phase 5)
+
+Before placing real orders:
+
+1. **Set credentials** — copy `.env.example` → `.env` and fill in all `POLY_` values
+   (API key from polymarket.com account settings, private key from your Polygon wallet)
+
+2. **Verify connection**
+   ```bash
+   python -m src.cli live-status
+   ```
+   Should show your USDC balance. If it shows "credentials not configured", check your `.env`.
+
+3. **Dry-run a bet** — always do this first
+   ```bash
+   python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25
+   ```
+   Shows direction, estimated price, and all safety check results. No order is placed.
+
+4. **Place the real order** — add `--confirm`
+   ```bash
+   python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25 --confirm
+   ```
+   Runs all safety checks, places a GTC limit order, and logs to `data/live_portfolio.json`.
+
+5. **Emergency stop** — the kill switch cancels all open CLOB orders immediately
+   ```bash
+   python -m src.cli kill-switch --activate --reason "manual stop"
+   python -m src.cli kill-switch --deactivate   # re-enable when ready
+   ```
+
+6. **Resolve a position** when the market settles
+   ```bash
+   python -m src.cli live-resolve <position_id> --outcome YES --exit-price 0.97
+   ```
+   Records P&L and updates the daily loss tracker. Kill switch auto-fires if the daily limit is breached.
+
+### Phase 5 CLI reference
+
+```bash
+# Status
+python -m src.cli live-status
+
+# Betting
+python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25
+python -m src.cli live-bet <market_id> --direction BUY_NO  --amount 25 --confirm
+
+# Portfolio
+python -m src.cli live-portfolio
+python -m src.cli live-resolve <position_id> --outcome YES --exit-price 0.95
+
+# Kill switch
+python -m src.cli kill-switch                              # show status
+python -m src.cli kill-switch --activate --reason "manual stop"
+python -m src.cli kill-switch --deactivate
+```
+
+### Safety defaults (edit `data/live_state.json` to change)
+| Setting | Default | Description |
+|---|---|---|
+| `daily_loss_limit` | $200 | Max daily loss before kill switch auto-fires |
+| `max_position_size` | $100 | Max USDC per single bet |
+
+---
+
 ## Architecture
 
 ```
 src/
-├── client.py       # Polymarket API client
-├── markets.py      # Market fetching + filtering
-├── analyzer.py     # Claude probability estimator
-├── edge.py         # Edge scoring + ranking
-├── storage.py      # Snapshots + analysis persistence
-└── cli.py          # CLI entry point
+├── client.py           # Polymarket API client (auth + unauth modes)
+├── markets.py          # Market fetching + filtering
+├── analyzer.py         # Claude probability estimator
+├── edge.py             # Edge scoring + ranking
+├── storage.py          # Snapshots + analysis persistence
+├── betting.py          # Kelly criterion sizing
+├── portfolio.py        # Paper trading ledger
+├── executor.py         # Live order placement (Phase 5)
+├── live_portfolio.py   # Live trade ledger (Phase 5)
+├── safety.py           # Kill switch + safety rails (Phase 5)
+└── cli.py              # CLI entry point
 
 data/               # gitignored
-├── snapshots/      # YYYY-MM-DD.json market snapshots
-└── analysis/       # YYYY-MM-DD-HH.json Claude analysis results
+├── snapshots/          # YYYY-MM-DD.json market snapshots
+├── analysis/           # YYYY-MM-DD-HH.json Claude analysis results
+├── portfolio.json      # Paper trading ledger
+├── live_portfolio.json # Live trading ledger (Phase 5)
+└── live_state.json     # Kill switch + daily P&L state (Phase 5)
 ```
 
 ## Risk notes
-- This is a paper trading system — no real money is moved automatically
-- Quarter-Kelly sizing is intentionally conservative
+- Paper trading and live trading are independent — paper trades are unaffected by live activity
+- Quarter-Kelly sizing is intentionally conservative (max $50/position in paper mode)
+- Live mode hard limits: $100/position, $200/day loss, kill switch on breach
 - Sports markets require external context (standings, injury news) — treat those signals with extra skepticism
+- Always dry-run (`live-bet` without `--confirm`) before placing real orders
 - Always verify high-edge signals manually before acting

@@ -9,6 +9,16 @@ Usage:
     python -m src.cli snapshot                          # Fetch and save snapshot
     python -m src.cli scan --limit 20 --min-volume 50000
     python -m src.cli edges --min-edge 0.05 --confidence medium
+
+    # Live trading (Phase 5)
+    python -m src.cli live-status
+    python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25
+    python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25 --confirm
+    python -m src.cli live-portfolio
+    python -m src.cli live-resolve <position_id> --outcome YES --exit-price 0.95
+    python -m src.cli kill-switch --activate --reason "manual stop"
+    python -m src.cli kill-switch --deactivate
+    python -m src.cli kill-switch
 """
 
 import argparse
@@ -27,6 +37,25 @@ from src.markets import fetch_active_markets, fetch_market_orderbook, filter_mar
 from src.storage import save_snapshot, load_latest_snapshot, save_analysis, load_latest_analysis
 from src.betting import recommend_bet
 from src.portfolio import load_portfolio, open_position, close_position, portfolio_summary
+from src.live_portfolio import (
+    load_live_portfolio,
+    save_live_portfolio,
+    open_live_position,
+    close_live_position,
+    live_portfolio_summary,
+)
+from src.safety import (
+    load_state,
+    check_kill_switch,
+    activate_kill_switch,
+    deactivate_kill_switch,
+    check_daily_loss_limit,
+    validate_position_size,
+    record_daily_pnl,
+    KillSwitchError,
+    DailyLossLimitError,
+    PositionSizeError,
+)
 
 console = Console(width=160)
 
@@ -529,6 +558,340 @@ def cmd_resolve(args):
     )
 
 
+def cmd_live_bet(args):
+    market_id = args.market_id
+    direction = args.direction
+    amount = args.amount
+
+    # --- Dry-run: show preview without placing ---
+    if not args.confirm:
+        # Fetch market info for estimated price (no auth needed)
+        with console.status(f"[bold cyan]Fetching market {market_id}...[/]"):
+            markets = fetch_active_markets(limit=200)
+        market = next((m for m in markets if m["market_id"] == market_id), None)
+
+        if direction == "BUY_YES":
+            est_price = market.get("yes_price") if market else None
+        else:
+            est_price = market.get("no_price") if market else None
+
+        question = market["question"][:70] if market else market_id
+
+        # Check safety state (no trades, just preview)
+        state = load_state()
+        ks_active = state.get("kill_switch", False)
+        ks_reason = state.get("kill_switch_reason") or ""
+        daily_pnl = state.get("daily_pnl", 0.0)
+        limit = state.get("daily_loss_limit", 200.0)
+        max_size = state.get("max_position_size", 100.0)
+        remaining = limit + daily_pnl
+
+        safety_ok = (
+            not ks_active
+            and amount <= max_size
+            and (daily_pnl - amount) >= -limit
+        )
+
+        console.print(
+            Panel(
+                f"  [bold]DRY RUN — no order placed[/]\n\n"
+                f"  Market:     {question}\n"
+                f"  Direction:  [bold {'green' if direction == 'BUY_YES' else 'red'}]{direction}[/]\n"
+                f"  Amount:     [bold]${amount:.2f}[/]\n"
+                f"  Est. price: {_fmt_pct(est_price)}\n\n"
+                f"  [bold]Safety checks:[/]\n"
+                f"    Kill switch:       [{'red' if ks_active else 'green'}]{'ACTIVE — ' + ks_reason if ks_active else 'off'}[/]\n"
+                f"    Position size:     [{'red' if amount > max_size else 'green'}]${amount:.2f} / max ${max_size:.2f}[/]\n"
+                f"    Daily loss room:   [{'red' if remaining < amount else 'green'}]${remaining:.2f} remaining[/]\n\n"
+                f"  Add [bold cyan]--confirm[/] to place the real order.",
+                title="[bold yellow]Live Bet Preview[/]",
+                expand=False,
+            )
+        )
+        if not safety_ok:
+            console.print("[red]Safety checks failed — order would be blocked.[/]")
+        return
+
+    # --- Confirmed: run safety checks and place real order ---
+    try:
+        check_kill_switch()
+        validate_position_size(amount)
+        check_daily_loss_limit(amount)
+    except KillSwitchError as e:
+        console.print(f"[bold red]Kill switch active:[/] {e}")
+        return
+    except (DailyLossLimitError, PositionSizeError) as e:
+        console.print(f"[bold red]Safety check failed:[/] {e}")
+        return
+
+    from src.executor import resolve_token_id, place_order
+
+    # Resolve token_id and mid-price for the chosen direction
+    with console.status("[bold cyan]Resolving token and price...[/]"):
+        try:
+            token_id = resolve_token_id(market_id, direction)
+        except Exception as e:
+            console.print(f"[red]Could not resolve token_id:[/] {e}")
+            return
+
+        # Best estimate of fill price = current midpoint from CLOB
+        try:
+            import requests as _requests
+            from src.client import CLOB_HOST
+            mid_resp = _requests.get(
+                f"{CLOB_HOST}/midpoint", params={"token_id": token_id}, timeout=10
+            )
+            mid_resp.raise_for_status()
+            price = float(mid_resp.json().get("mid", 0))
+            if price <= 0 or price >= 1:
+                raise ValueError(f"invalid mid {price}")
+        except Exception:
+            # Fallback: use Gamma price
+            markets = fetch_active_markets(limit=200)
+            market = next((m for m in markets if m["market_id"] == market_id), None)
+            if not market:
+                console.print(f"[red]Market {market_id!r} not found.[/]")
+                return
+            price = market.get("yes_price" if direction == "BUY_YES" else "no_price") or 0
+            if not price:
+                console.print("[red]Cannot determine price for order.[/]")
+                return
+
+    # Fetch market metadata for the portfolio record
+    with console.status("[bold cyan]Fetching market metadata...[/]"):
+        all_markets = fetch_active_markets(limit=200)
+    market = next((m for m in all_markets if m["market_id"] == market_id), None)
+    question = market["question"] if market else ""
+    model_prob = market.get("model_prob") if market else None
+    market_prob = market.get("yes_price", price) if market else price
+    edge = (model_prob - market_prob) if model_prob else 0.0
+
+    with console.status("[bold cyan]Placing order...[/]"):
+        try:
+            result = place_order(market_id, token_id, direction, amount, price)
+        except KillSwitchError as e:
+            console.print(f"[bold red]Kill switch active:[/] {e}")
+            return
+        except Exception as e:
+            console.print(f"[bold red]Order failed:[/] {e}")
+            return
+
+    order_id = result.get("orderID") or result.get("order_id") or result.get("id") or "unknown"
+
+    rec = {
+        "market_id": market_id,
+        "question": question,
+        "direction": direction,
+        "amount": amount,
+        "market_prob": price,
+        "model_prob": model_prob or price,
+        "edge": edge,
+        "confidence": market.get("confidence", "n/a") if market else "n/a",
+        "rationale": market.get("rationale", "") if market else "",
+    }
+
+    portfolio = load_live_portfolio()
+    pos = open_live_position(portfolio, rec, order_id)
+
+    console.print(
+        Panel(
+            f"  [bold green]Order placed![/]\n\n"
+            f"  Position ID: [cyan]{pos['id']}[/]\n"
+            f"  Order ID:    [dim]{order_id}[/]\n"
+            f"  Question:    {question[:65]}\n"
+            f"  Direction:   [bold {'green' if direction == 'BUY_YES' else 'red'}]{direction}[/]\n"
+            f"  Amount:      ${amount:.2f} @ {_fmt_pct(price)}\n"
+            f"  Bankroll:    ${portfolio['bankroll']:.2f} remaining",
+            title="[bold green]Live Order Confirmed[/]",
+            expand=False,
+        )
+    )
+
+
+def cmd_live_portfolio(args):
+    portfolio = load_live_portfolio()
+    summary = live_portfolio_summary(portfolio)
+
+    pnl_color = "green" if summary["total_pnl"] >= 0 else "red"
+    console.print(
+        Panel(
+            f"  Bankroll:       [bold green]${summary['bankroll']:.2f}[/]\n"
+            f"  Open positions: {summary['open_count']}\n"
+            f"  Closed:         {summary['closed_count']}\n"
+            f"  Total P&L:      [{pnl_color}]{summary['total_pnl']:+.2f}[/{pnl_color}]\n"
+            f"  Open exposure:  ${summary['open_exposure']:.2f}",
+            title="[bold magenta]Live Portfolio Summary[/]",
+            expand=False,
+        )
+    )
+
+    open_positions = [p for p in portfolio["positions"] if p["status"] == "open"]
+    if not open_positions:
+        console.print("[dim]No open live positions.[/]")
+        return
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold magenta",
+        title="[bold]Open Live Positions[/]",
+    )
+    table.add_column("ID", width=8, no_wrap=True)
+    table.add_column("Order ID", width=12, no_wrap=True)
+    table.add_column("Question", min_width=38, max_width=50, no_wrap=True)
+    table.add_column("Dir", min_width=9, no_wrap=True)
+    table.add_column("Amount", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Entry%", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Opened", min_width=10, no_wrap=True)
+
+    for pos in open_positions:
+        color = "green" if pos["direction"] == "BUY_YES" else "red"
+        q = pos["question"]
+        if len(q) > 50:
+            q = q[:47] + "..."
+        opened = pos["opened_at"][:10] if pos.get("opened_at") else "-"
+        order_short = (pos.get("order_id") or "")[:12]
+        table.add_row(
+            pos["id"][:8],
+            order_short,
+            q,
+            Text(pos["direction"], style=f"bold {color}"),
+            f"${pos['amount']:.2f}",
+            _fmt_pct(pos.get("entry_price")),
+            opened,
+        )
+
+    console.print(table)
+
+
+def cmd_live_resolve(args):
+    portfolio = load_live_portfolio()
+    try:
+        pos = close_live_position(portfolio, args.position_id, args.outcome, args.exit_price)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        return
+
+    # Update daily safety tracking
+    record_daily_pnl(pos["pnl"])
+
+    color = "green" if pos["pnl"] >= 0 else "red"
+    console.print(
+        f"[bold]Live position resolved.[/]\n"
+        f"  ID:       {pos['id'][:8]}\n"
+        f"  Outcome:  {args.outcome.upper()}\n"
+        f"  P&L:      [{color}]{pos['pnl']:+.2f}[/{color}]\n"
+        f"  Bankroll: ${portfolio['bankroll']:.2f}"
+    )
+
+    # Warn if kill switch auto-activated
+    from src.safety import load_state as _load_state
+    state = _load_state()
+    if state.get("kill_switch"):
+        console.print(
+            f"[bold red]Kill switch auto-activated:[/] {state.get('kill_switch_reason', '')}"
+        )
+
+
+def cmd_kill_switch(args):
+    if args.activate and args.deactivate:
+        console.print("[red]Cannot use --activate and --deactivate together.[/]")
+        return
+
+    if args.activate:
+        reason = args.reason or "manually activated via CLI"
+        activate_kill_switch(reason)
+
+        # Cancel all open CLOB orders (best-effort — proceed even if this fails)
+        from src.executor import cancel_all_orders
+        try:
+            with console.status("[bold red]Cancelling all open CLOB orders...[/]"):
+                cancelled = cancel_all_orders()
+            console.print(
+                f"[bold red]Kill switch activated.[/] Reason: {reason}\n"
+                f"  Cancelled orders: {cancelled}"
+            )
+        except Exception as e:
+            console.print(
+                f"[bold red]Kill switch activated.[/] Reason: {reason}\n"
+                f"  [yellow]Warning: could not cancel CLOB orders:[/] {e}"
+            )
+        return
+
+    if args.deactivate:
+        deactivate_kill_switch()
+        console.print("[bold green]Kill switch deactivated.[/] Trading is now enabled.")
+        return
+
+    # Status display (no flags)
+    state = load_state()
+    ks = state.get("kill_switch", False)
+    reason = state.get("kill_switch_reason") or "-"
+    daily_pnl = state.get("daily_pnl", 0.0)
+    limit = state.get("daily_loss_limit", 200.0)
+    max_size = state.get("max_position_size", 100.0)
+
+    status_color = "red" if ks else "green"
+    status_label = "ACTIVE" if ks else "off"
+
+    console.print(
+        Panel(
+            f"  Status:         [{status_color}][bold]{status_label}[/bold][/{status_color}]\n"
+            f"  Reason:         {reason}\n"
+            f"  Daily P&L:      {daily_pnl:+.2f}\n"
+            f"  Daily limit:    ${limit:.2f}\n"
+            f"  Max position:   ${max_size:.2f}",
+            title="[bold]Kill Switch Status[/]",
+            expand=False,
+        )
+    )
+
+
+def cmd_live_status(args):
+    state = load_state()
+    ks = state.get("kill_switch", False)
+    ks_reason = state.get("kill_switch_reason") or "-"
+    daily_pnl = state.get("daily_pnl", 0.0)
+    limit = state.get("daily_loss_limit", 200.0)
+    max_size = state.get("max_position_size", 100.0)
+    remaining = limit + daily_pnl
+
+    ks_color = "red" if ks else "green"
+    ks_label = "ACTIVE" if ks else "off"
+    pnl_color = "green" if daily_pnl >= 0 else "red"
+
+    # USDC balance (requires credentials — graceful fallback)
+    usdc_balance = None
+    usdc_error = None
+    try:
+        from src.executor import get_usdc_balance
+        usdc_balance = get_usdc_balance()
+    except KillSwitchError:
+        usdc_error = "kill switch active"
+    except EnvironmentError as e:
+        usdc_error = "credentials not configured"
+    except Exception as e:
+        usdc_error = str(e)[:60]
+
+    usdc_str = (
+        f"${usdc_balance:.2f}"
+        if usdc_balance is not None
+        else f"[dim]unavailable ({usdc_error})[/dim]"
+    )
+
+    console.print(
+        Panel(
+            f"  Kill switch:         [{ks_color}][bold]{ks_label}[/bold][/{ks_color}]  {ks_reason if ks else ''}\n"
+            f"  Daily P&L:           [{pnl_color}]{daily_pnl:+.2f}[/{pnl_color}]\n"
+            f"  Daily loss limit:    ${limit:.2f}  (${remaining:.2f} remaining)\n"
+            f"  Max position size:   ${max_size:.2f}\n"
+            f"  USDC wallet balance: {usdc_str}",
+            title="[bold magenta]Live Trading Status[/]",
+            expand=False,
+        )
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="polymarket-intel",
@@ -593,6 +956,37 @@ def main():
     p_res.add_argument("--outcome", choices=["YES", "NO"], required=True)
     p_res.add_argument("--exit-price", type=float, required=True, dest="exit_price")
 
+    # live-bet
+    p_lb = sub.add_parser("live-bet", help="Place a live order (dry-run without --confirm)")
+    p_lb.add_argument("market_id", help="Polymarket condition ID")
+    p_lb.add_argument("--direction", choices=["BUY_YES", "BUY_NO"], required=True)
+    p_lb.add_argument("--amount", type=float, required=True, help="USDC amount")
+    p_lb.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Actually place the order (without this flag: dry-run only)",
+    )
+
+    # live-portfolio
+    sub.add_parser("live-portfolio", help="Show live portfolio summary and open positions")
+
+    # live-resolve
+    p_lr = sub.add_parser("live-resolve", help="Close a live position and record P&L")
+    p_lr.add_argument("position_id", help="Live position ID or 8-char prefix")
+    p_lr.add_argument("--outcome", choices=["YES", "NO"], required=True)
+    p_lr.add_argument("--exit-price", type=float, required=True, dest="exit_price")
+
+    # kill-switch
+    p_ks = sub.add_parser("kill-switch", help="Manage the live trading kill switch")
+    ks_group = p_ks.add_mutually_exclusive_group()
+    ks_group.add_argument("--activate", action="store_true", default=False)
+    ks_group.add_argument("--deactivate", action="store_true", default=False)
+    p_ks.add_argument("--reason", type=str, default=None, help="Reason for activation")
+
+    # live-status
+    sub.add_parser("live-status", help="Show kill switch, daily P&L, and USDC balance")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -605,6 +999,11 @@ def main():
         "paper-bet": cmd_paper_bet,
         "portfolio": cmd_portfolio,
         "resolve": cmd_resolve,
+        "live-bet": cmd_live_bet,
+        "live-portfolio": cmd_live_portfolio,
+        "live-resolve": cmd_live_resolve,
+        "kill-switch": cmd_kill_switch,
+        "live-status": cmd_live_status,
     }
     dispatch[args.command](args)
 
