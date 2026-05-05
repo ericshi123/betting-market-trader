@@ -1,19 +1,19 @@
 """
-Polymarket Intelligence CLI
+Kalshi Intelligence CLI
 
 Usage:
     python -m src.cli list                              # Top 20 active markets
-    python -m src.cli list --min-volume 10000           # Filter by volume
+    python -m src.cli list --min-volume 100             # Filter by volume (contracts)
     python -m src.cli list --days 7                     # Close within 7 days
-    python -m src.cli show <market_id>                  # Market detail + order book
+    python -m src.cli show <ticker>                     # Market detail
     python -m src.cli snapshot                          # Fetch and save snapshot
-    python -m src.cli scan --limit 20 --min-volume 50000
+    python -m src.cli scan --limit 20 --min-volume 10
     python -m src.cli edges --min-edge 0.05 --confidence medium
 
     # Live trading (Phase 5)
     python -m src.cli live-status
-    python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25
-    python -m src.cli live-bet <market_id> --direction BUY_YES --amount 25 --confirm
+    python -m src.cli live-bet <ticker> --direction BUY_YES --amount 25
+    python -m src.cli live-bet <ticker> --direction BUY_YES --amount 25 --confirm
     python -m src.cli live-portfolio
     python -m src.cli live-resolve <position_id> --outcome YES --exit-price 0.95
     python -m src.cli kill-switch --activate --reason "manual stop"
@@ -33,7 +33,7 @@ from rich.table import Table
 from rich import box
 from rich.text import Text
 
-from src.markets import fetch_active_markets, fetch_market_orderbook, filter_markets
+from src.markets import fetch_active_markets, filter_markets
 from src.storage import save_snapshot, load_latest_snapshot, save_analysis, load_latest_analysis
 from src.betting import recommend_bet
 from src.portfolio import load_portfolio, open_position, close_position, portfolio_summary
@@ -64,10 +64,10 @@ def _fmt_volume(v) -> str:
     if v is None:
         return "-"
     if v >= 1_000_000:
-        return f"${v/1_000_000:.1f}M"
+        return f"{v/1_000_000:.1f}M"
     if v >= 1_000:
-        return f"${v/1_000:.0f}K"
-    return f"${v:.0f}"
+        return f"{v/1_000:.0f}K"
+    return f"{v:.0f}"
 
 
 def _fmt_pct(v) -> str:
@@ -112,22 +112,27 @@ def cmd_list(args):
         box=box.SIMPLE_HEAVY,
         show_header=True,
         header_style="bold magenta",
-        title=f"[bold]Polymarket — Active Markets[/] ({len(display)} shown)",
+        title=f"[bold]Kalshi — Active Markets[/] ({len(display)} shown)",
         title_style="bold white",
     )
     table.add_column("#", style="dim", width=4, justify="right", no_wrap=True)
-    table.add_column("Question", min_width=50, max_width=65, no_wrap=True)
+    table.add_column("Ticker", min_width=20, max_width=35, no_wrap=True)
+    table.add_column("Question", min_width=35, max_width=55, no_wrap=True)
     table.add_column("Yes%", justify="right", min_width=7, no_wrap=True)
     table.add_column("No%", justify="right", min_width=7, no_wrap=True)
     table.add_column("Volume", justify="right", min_width=9, no_wrap=True)
     table.add_column("Closes", justify="right", min_width=8, no_wrap=True)
 
     for i, m in enumerate(display, 1):
+        ticker = m["market_id"]
+        if len(ticker) > 32:
+            ticker = ticker[:29] + "..."
         q = m["question"]
-        if len(q) > 62:
-            q = q[:59] + "..."
+        if len(q) > 52:
+            q = q[:49] + "..."
         table.add_row(
             str(i),
+            ticker,
             q,
             _fmt_pct(m.get("yes_price")),
             _fmt_pct(m.get("no_price")),
@@ -137,18 +142,18 @@ def cmd_list(args):
 
     console.print(table)
     console.print(
-        f"[dim]Source: Gamma API · {len(markets)} total matched "
+        f"[dim]Source: Kalshi API · {len(markets)} total matched "
         f"({'filtered' if args.min_volume or args.days else 'no filters'})[/]"
     )
 
 
 def cmd_show(args):
-    market_id = args.market_id
+    ticker = args.market_id
 
-    with console.status(f"[bold cyan]Fetching market {market_id}...[/]"):
+    with console.status(f"[bold cyan]Fetching market {ticker}...[/]"):
         markets = fetch_active_markets(limit=200)
 
-    match = next((m for m in markets if m["market_id"] == market_id), None)
+    match = next((m for m in markets if m["market_id"] == ticker), None)
 
     if match:
         console.print(
@@ -156,50 +161,15 @@ def cmd_show(args):
                 f"[bold]{match['question']}[/]\n\n"
                 f"  [cyan]Yes:[/] {_fmt_pct(match.get('yes_price'))}   "
                 f"[red]No:[/] {_fmt_pct(match.get('no_price'))}\n"
-                f"  Volume:    {_fmt_volume(match.get('volume'))}\n"
-                f"  Liquidity: {_fmt_volume(match.get('liquidity'))}\n"
+                f"  Volume:    {_fmt_volume(match.get('volume'))} contracts\n"
                 f"  Closes:    {match.get('end_date', 'unknown')}  ({_days_to_close(match.get('end_date', ''))})\n"
-                f"  Outcomes:  {', '.join(match.get('outcomes', []))}\n"
-                f"  Market ID: [dim]{market_id}[/]",
+                f"  Ticker:    [dim]{ticker}[/]",
                 title="[bold magenta]Market Detail[/]",
                 expand=False,
             )
         )
     else:
-        console.print(f"[yellow]Market {market_id!r} not found in active markets.[/]")
-
-    # Order book
-    with console.status("[bold cyan]Fetching order book...[/]"):
-        try:
-            book = fetch_market_orderbook(market_id)
-        except Exception as e:
-            console.print(f"[red]Order book unavailable:[/] {e}")
-            return
-
-    if book.get("error"):
-        console.print(f"[yellow]Order book:[/] {book['error']}")
-        return
-
-    bids = book.get("bids", [])[:10]
-    asks = book.get("asks", [])[:10]
-
-    ob_table = Table(box=box.SIMPLE, title="[bold]Order Book (Top 10)[/]", expand=False)
-    ob_table.add_column("Bid Size", justify="right", style="green")
-    ob_table.add_column("Bid Price", justify="right", style="green")
-    ob_table.add_column("Ask Price", justify="right", style="red")
-    ob_table.add_column("Ask Size", justify="right", style="red")
-
-    for i in range(max(len(bids), len(asks))):
-        bid = bids[i] if i < len(bids) else None
-        ask = asks[i] if i < len(asks) else None
-        ob_table.add_row(
-            f"{bid['size']:.0f}" if bid else "",
-            f"{bid['price']:.4f}" if bid else "",
-            f"{ask['price']:.4f}" if ask else "",
-            f"{ask['size']:.0f}" if ask else "",
-        )
-
-    console.print(ob_table)
+        console.print(f"[yellow]Ticker {ticker!r} not found in active markets.[/]")
 
 
 def cmd_snapshot(args):
@@ -217,7 +187,6 @@ def cmd_scan(args):
     from src.analyzer import estimate_probability
     from src.edge import rank_markets
 
-    # Fetch a large pool — price + days filters can discard most candidates
     with console.status("[bold cyan]Fetching markets...[/]"):
         markets = fetch_active_markets(limit=max(200, args.limit * 10))
 
@@ -412,7 +381,9 @@ def cmd_recommend(args):
     table.add_column("Mkt%", justify="right", min_width=6, no_wrap=True)
     table.add_column("Mdl%", justify="right", min_width=6, no_wrap=True)
     table.add_column("Edge", justify="right", min_width=7, no_wrap=True)
-    table.add_column("Amount", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Side", justify="right", min_width=5, no_wrap=True)
+    table.add_column("Count", justify="right", min_width=6, no_wrap=True)
+    table.add_column("Price¢", justify="right", min_width=7, no_wrap=True)
     table.add_column("Conf", min_width=6, no_wrap=True)
     table.add_column("Rationale", min_width=28, no_wrap=True)
 
@@ -431,13 +402,15 @@ def cmd_recommend(args):
             _fmt_pct(r["market_prob"]),
             _fmt_pct(r["model_prob"]),
             Text(f"{r['edge']*100:+.1f}pp", style=color),
-            f"${r['amount']:.2f}",
+            r.get("side", "-"),
+            str(r.get("count", "-")),
+            f"{r.get('limit_price', '-')}¢",
             r["confidence"],
             rationale,
         )
 
     console.print(table)
-    console.print(f"[dim]Bankroll: ${args.bankroll:.0f} · Use `paper-bet <market_id> --direction DIR --amount AMT` to place.[/]")
+    console.print(f"[dim]Bankroll: ${args.bankroll:.0f} · Use `paper-bet <ticker> --direction DIR --amount AMT` to place.[/]")
 
 
 def cmd_paper_bet(args):
@@ -448,7 +421,7 @@ def cmd_paper_bet(args):
 
     market = next((m for m in analyzed_list if m.get("market_id") == args.market_id), None)
     if not market:
-        console.print(f"[red]Market {args.market_id!r} not found in latest snapshot.[/]")
+        console.print(f"[red]Ticker {args.market_id!r} not found in latest snapshot.[/]")
         return
 
     model_prob = market.get("model_prob") or market.get("yes_price", 0)
@@ -559,25 +532,25 @@ def cmd_resolve(args):
 
 
 def cmd_live_bet(args):
-    market_id = args.market_id
+    ticker = args.market_id
     direction = args.direction
     amount = args.amount
+    side = "yes" if direction == "BUY_YES" else "no"
 
     # --- Dry-run: show preview without placing ---
     if not args.confirm:
-        # Fetch market info for estimated price (no auth needed)
-        with console.status(f"[bold cyan]Fetching market {market_id}...[/]"):
+        with console.status(f"[bold cyan]Fetching market {ticker}...[/]"):
             markets = fetch_active_markets(limit=200)
-        market = next((m for m in markets if m["market_id"] == market_id), None)
+        market = next((m for m in markets if m["market_id"] == ticker), None)
 
-        if direction == "BUY_YES":
-            est_price = market.get("yes_price") if market else None
-        else:
-            est_price = market.get("no_price") if market else None
+        price_key = "yes_price" if direction == "BUY_YES" else "no_price"
+        est_price = market.get(price_key) if market else None
+        est_limit_price = max(1, min(99, int(round(est_price * 100)))) if est_price else None
+        count = max(1, int(amount))
+        est_cost = round(count * est_limit_price / 100.0, 2) if est_limit_price else None
 
-        question = market["question"][:70] if market else market_id
+        question = market["question"][:70] if market else ticker
 
-        # Check safety state (no trades, just preview)
         state = load_state()
         ks_active = state.get("kill_switch", False)
         ks_reason = state.get("kill_switch_reason") or ""
@@ -595,10 +568,12 @@ def cmd_live_bet(args):
         console.print(
             Panel(
                 f"  [bold]DRY RUN — no order placed[/]\n\n"
-                f"  Market:     {question}\n"
-                f"  Direction:  [bold {'green' if direction == 'BUY_YES' else 'red'}]{direction}[/]\n"
-                f"  Amount:     [bold]${amount:.2f}[/]\n"
-                f"  Est. price: {_fmt_pct(est_price)}\n\n"
+                f"  Market:      {question}\n"
+                f"  Ticker:      [dim]{ticker}[/]\n"
+                f"  Side:        [bold {'green' if side == 'yes' else 'red'}]{side}[/]\n"
+                f"  Count:       [bold]{count}[/] contracts\n"
+                f"  Limit price: [bold]{est_limit_price}¢[/]\n"
+                f"  Est. cost:   [bold]${est_cost:.2f}[/]\n\n"
                 f"  [bold]Safety checks:[/]\n"
                 f"    Kill switch:       [{'red' if ks_active else 'green'}]{'ACTIVE — ' + ks_reason if ks_active else 'off'}[/]\n"
                 f"    Position size:     [{'red' if amount > max_size else 'green'}]${amount:.2f} / max ${max_size:.2f}[/]\n"
@@ -624,51 +599,33 @@ def cmd_live_bet(args):
         console.print(f"[bold red]Safety check failed:[/] {e}")
         return
 
-    from src.executor import resolve_token_id, place_order
+    from src.executor import place_order
 
-    # Resolve token_id and mid-price for the chosen direction
-    with console.status("[bold cyan]Resolving token and price...[/]"):
-        try:
-            token_id = resolve_token_id(market_id, direction)
-        except Exception as e:
-            console.print(f"[red]Could not resolve token_id:[/] {e}")
-            return
-
-        # Best estimate of fill price = current midpoint from CLOB
-        try:
-            import requests as _requests
-            from src.client import CLOB_HOST
-            mid_resp = _requests.get(
-                f"{CLOB_HOST}/midpoint", params={"token_id": token_id}, timeout=10
-            )
-            mid_resp.raise_for_status()
-            price = float(mid_resp.json().get("mid", 0))
-            if price <= 0 or price >= 1:
-                raise ValueError(f"invalid mid {price}")
-        except Exception:
-            # Fallback: use Gamma price
-            markets = fetch_active_markets(limit=200)
-            market = next((m for m in markets if m["market_id"] == market_id), None)
-            if not market:
-                console.print(f"[red]Market {market_id!r} not found.[/]")
-                return
-            price = market.get("yes_price" if direction == "BUY_YES" else "no_price") or 0
-            if not price:
-                console.print("[red]Cannot determine price for order.[/]")
-                return
-
-    # Fetch market metadata for the portfolio record
-    with console.status("[bold cyan]Fetching market metadata...[/]"):
+    # Fetch market info for price and metadata
+    with console.status("[bold cyan]Fetching market data...[/]"):
         all_markets = fetch_active_markets(limit=200)
-    market = next((m for m in all_markets if m["market_id"] == market_id), None)
-    question = market["question"] if market else ""
-    model_prob = market.get("model_prob") if market else None
-    market_prob = market.get("yes_price", price) if market else price
+    market = next((m for m in all_markets if m["market_id"] == ticker), None)
+
+    if not market:
+        console.print(f"[red]Ticker {ticker!r} not found in active markets.[/]")
+        return
+
+    price_key = "yes_price" if direction == "BUY_YES" else "no_price"
+    price = market.get(price_key) or 0
+    if not price:
+        console.print("[red]Cannot determine price for order.[/]")
+        return
+
+    limit_price = max(1, min(99, int(round(price * 100))))
+    count = max(1, int(amount))
+    question = market["question"]
+    model_prob = market.get("model_prob")
+    market_prob = market.get("yes_price", price)
     edge = (model_prob - market_prob) if model_prob else 0.0
 
     with console.status("[bold cyan]Placing order...[/]"):
         try:
-            result = place_order(market_id, token_id, direction, amount, price)
+            result = place_order(ticker, side, count, limit_price)
         except KillSwitchError as e:
             console.print(f"[bold red]Kill switch active:[/] {e}")
             return
@@ -676,18 +633,19 @@ def cmd_live_bet(args):
             console.print(f"[bold red]Order failed:[/] {e}")
             return
 
-    order_id = result.get("orderID") or result.get("order_id") or result.get("id") or "unknown"
+    order = result.get("order", result)
+    order_id = order.get("order_id") or order.get("id") or "unknown"
 
     rec = {
-        "market_id": market_id,
+        "market_id": ticker,
         "question": question,
         "direction": direction,
-        "amount": amount,
+        "amount": round(count * limit_price / 100.0, 2),
         "market_prob": price,
         "model_prob": model_prob or price,
         "edge": edge,
-        "confidence": market.get("confidence", "n/a") if market else "n/a",
-        "rationale": market.get("rationale", "") if market else "",
+        "confidence": market.get("confidence", "n/a"),
+        "rationale": market.get("rationale", ""),
     }
 
     portfolio = load_live_portfolio()
@@ -696,12 +654,13 @@ def cmd_live_bet(args):
     console.print(
         Panel(
             f"  [bold green]Order placed![/]\n\n"
-            f"  Position ID: [cyan]{pos['id']}[/]\n"
-            f"  Order ID:    [dim]{order_id}[/]\n"
-            f"  Question:    {question[:65]}\n"
-            f"  Direction:   [bold {'green' if direction == 'BUY_YES' else 'red'}]{direction}[/]\n"
-            f"  Amount:      ${amount:.2f} @ {_fmt_pct(price)}\n"
-            f"  Bankroll:    ${portfolio['bankroll']:.2f} remaining",
+            f"  Position ID:  [cyan]{pos['id']}[/]\n"
+            f"  Order ID:     [dim]{order_id}[/]\n"
+            f"  Question:     {question[:65]}\n"
+            f"  Ticker:       [dim]{ticker}[/]\n"
+            f"  Side:         [bold {'green' if side == 'yes' else 'red'}]{side}[/]\n"
+            f"  Count:        {count} contracts @ {limit_price}¢\n"
+            f"  Bankroll:     ${portfolio['bankroll']:.2f} remaining",
             title="[bold green]Live Order Confirmed[/]",
             expand=False,
         )
@@ -772,7 +731,6 @@ def cmd_live_resolve(args):
         console.print(f"[red]{e}[/]")
         return
 
-    # Update daily safety tracking
     record_daily_pnl(pos["pnl"])
 
     color = "green" if pos["pnl"] >= 0 else "red"
@@ -784,7 +742,6 @@ def cmd_live_resolve(args):
         f"  Bankroll: ${portfolio['bankroll']:.2f}"
     )
 
-    # Warn if kill switch auto-activated
     from src.safety import load_state as _load_state
     state = _load_state()
     if state.get("kill_switch"):
@@ -802,10 +759,9 @@ def cmd_kill_switch(args):
         reason = args.reason or "manually activated via CLI"
         activate_kill_switch(reason)
 
-        # Cancel all open CLOB orders (best-effort — proceed even if this fails)
         from src.executor import cancel_all_orders
         try:
-            with console.status("[bold red]Cancelling all open CLOB orders...[/]"):
+            with console.status("[bold red]Cancelling all open Kalshi orders...[/]"):
                 cancelled = cancel_all_orders()
             console.print(
                 f"[bold red]Kill switch activated.[/] Reason: {reason}\n"
@@ -814,7 +770,7 @@ def cmd_kill_switch(args):
         except Exception as e:
             console.print(
                 f"[bold red]Kill switch activated.[/] Reason: {reason}\n"
-                f"  [yellow]Warning: could not cancel CLOB orders:[/] {e}"
+                f"  [yellow]Warning: could not cancel Kalshi orders:[/] {e}"
             )
         return
 
@@ -823,7 +779,6 @@ def cmd_kill_switch(args):
         console.print("[bold green]Kill switch deactivated.[/] Trading is now enabled.")
         return
 
-    # Status display (no flags)
     state = load_state()
     ks = state.get("kill_switch", False)
     reason = state.get("kill_switch_reason") or "-"
@@ -860,23 +815,23 @@ def cmd_live_status(args):
     ks_label = "ACTIVE" if ks else "off"
     pnl_color = "green" if daily_pnl >= 0 else "red"
 
-    # USDC balance (requires credentials — graceful fallback)
-    usdc_balance = None
-    usdc_error = None
+    # Account balance (requires credentials — graceful fallback)
+    balance = None
+    balance_error = None
     try:
-        from src.executor import get_usdc_balance
-        usdc_balance = get_usdc_balance()
+        from src.executor import get_balance
+        balance = get_balance()
     except KillSwitchError:
-        usdc_error = "kill switch active"
-    except EnvironmentError as e:
-        usdc_error = "credentials not configured"
+        balance_error = "kill switch active"
+    except EnvironmentError:
+        balance_error = "credentials not configured"
     except Exception as e:
-        usdc_error = str(e)[:60]
+        balance_error = str(e)[:60]
 
-    usdc_str = (
-        f"${usdc_balance:.2f}"
-        if usdc_balance is not None
-        else f"[dim]unavailable ({usdc_error})[/dim]"
+    balance_str = (
+        f"${balance:.2f}"
+        if balance is not None
+        else f"[dim]unavailable ({balance_error})[/dim]"
     )
 
     console.print(
@@ -885,7 +840,7 @@ def cmd_live_status(args):
             f"  Daily P&L:           [{pnl_color}]{daily_pnl:+.2f}[/{pnl_color}]\n"
             f"  Daily loss limit:    ${limit:.2f}  (${remaining:.2f} remaining)\n"
             f"  Max position size:   ${max_size:.2f}\n"
-            f"  USDC wallet balance: {usdc_str}",
+            f"  Kalshi balance:      {balance_str}",
             title="[bold magenta]Live Trading Status[/]",
             expand=False,
         )
@@ -894,23 +849,23 @@ def cmd_live_status(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="polymarket-intel",
-        description="Polymarket Intelligence CLI",
+        prog="kalshi-intel",
+        description="Kalshi Intelligence CLI",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # list
     p_list = sub.add_parser("list", help="List active markets")
     p_list.add_argument("--min-volume", type=float, default=None, metavar="N",
-                        help="Minimum volume in USD")
+                        help="Minimum volume in contracts")
     p_list.add_argument("--days", type=int, default=None,
                         help="Close within N days")
     p_list.add_argument("--top", type=int, default=20,
                         help="Number of markets to display (default 20)")
 
     # show
-    p_show = sub.add_parser("show", help="Show market detail + order book")
-    p_show.add_argument("market_id", help="Polymarket condition ID")
+    p_show = sub.add_parser("show", help="Show market detail")
+    p_show.add_argument("market_id", help="Kalshi market ticker")
 
     # snapshot
     sub.add_parser("snapshot", help="Fetch and save a snapshot to disk")
@@ -919,8 +874,8 @@ def main():
     p_scan = sub.add_parser("scan", help="Run LLM edge analysis on live markets")
     p_scan.add_argument("--limit", type=int, default=20,
                         help="Number of markets to analyze (default 20)")
-    p_scan.add_argument("--min-volume", type=float, default=50_000, metavar="N",
-                        help="Minimum volume filter (default 50000)")
+    p_scan.add_argument("--min-volume", type=float, default=10, metavar="N",
+                        help="Minimum volume filter in contracts (default 10)")
     p_scan.add_argument("--days", type=int, default=None,
                         help="Only include markets closing within N days")
     p_scan.add_argument("--min-yes-price", type=float, default=0.05, metavar="P",
@@ -943,7 +898,7 @@ def main():
 
     # paper-bet
     p_pb = sub.add_parser("paper-bet", help="Open a paper trade position")
-    p_pb.add_argument("market_id", help="Polymarket condition ID")
+    p_pb.add_argument("market_id", help="Kalshi market ticker")
     p_pb.add_argument("--direction", choices=["BUY_YES", "BUY_NO"], required=True)
     p_pb.add_argument("--amount", type=float, required=True, help="Dollar amount to bet")
 
@@ -958,9 +913,9 @@ def main():
 
     # live-bet
     p_lb = sub.add_parser("live-bet", help="Place a live order (dry-run without --confirm)")
-    p_lb.add_argument("market_id", help="Polymarket condition ID")
+    p_lb.add_argument("market_id", help="Kalshi market ticker")
     p_lb.add_argument("--direction", choices=["BUY_YES", "BUY_NO"], required=True)
-    p_lb.add_argument("--amount", type=float, required=True, help="USDC amount")
+    p_lb.add_argument("--amount", type=float, required=True, help="Dollar amount (converted to contracts)")
     p_lb.add_argument(
         "--confirm",
         action="store_true",
@@ -985,7 +940,7 @@ def main():
     p_ks.add_argument("--reason", type=str, default=None, help="Reason for activation")
 
     # live-status
-    sub.add_parser("live-status", help="Show kill switch, daily P&L, and USDC balance")
+    sub.add_parser("live-status", help="Show kill switch, daily P&L, and Kalshi balance")
 
     args = parser.parse_args()
 

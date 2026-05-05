@@ -51,15 +51,23 @@ def recommend_bet(market: dict, analyzed: dict, bankroll: float) -> dict | None:
         return None
 
     direction = "BUY_YES" if edge > 0 else "BUY_NO"
+    side = "yes" if edge > 0 else "no"
 
     kf = kelly_fraction(edge, model_prob, market_prob)
     raw_amount = bankroll * kf
     amount = min(raw_amount, 50.0)
 
+    entry_prob = market_prob if direction == "BUY_YES" else (1 - market_prob)
+    limit_price = max(1, min(99, int(round(entry_prob * 100))))
+
     return {
         "market_id": market.get("market_id") or analyzed.get("market_id"),
+        "ticker": market.get("market_id") or analyzed.get("market_id"),
         "question": market.get("question") or analyzed.get("question"),
         "direction": direction,
+        "side": side,
+        "limit_price": limit_price,
+        "count": max(1, int(amount)),
         "model_prob": model_prob,
         "market_prob": market_prob,
         "edge": edge,
