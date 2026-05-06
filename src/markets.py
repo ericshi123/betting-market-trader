@@ -60,12 +60,19 @@ def fetch_active_markets(limit: int = 200) -> list[dict]:
     Paginate through Kalshi open markets, normalize each to internal format.
     Returns up to limit markets sorted by volume descending.
     """
+    import time as _time
     markets = []
     cursor = None
     page_size = 100
+    # Only fetch markets closing at least 2 days from now (skips brand-new 0-volume markets)
+    min_close_ts = int(_time.time()) + (86400 * 2)
 
     while len(markets) < limit:
-        params: dict = {"limit": page_size, "status": "open"}
+        params: dict = {
+            "limit": page_size,
+            "status": "open",
+            "min_close_ts": min_close_ts,
+        }
         if cursor:
             params["cursor"] = cursor
 

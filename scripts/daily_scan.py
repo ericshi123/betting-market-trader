@@ -24,7 +24,7 @@ from src.edge import rank_markets
 from src.betting import recommend_bet
 
 SCAN_LIMIT = 15
-MIN_VOLUME = 50_000
+MIN_VOLUME = 10_000
 MIN_EDGE = 0.05
 BANKROLL = 1000.0
 
