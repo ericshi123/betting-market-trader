@@ -37,6 +37,11 @@ from src.markets import fetch_active_markets, filter_markets
 from src.storage import save_snapshot, load_latest_snapshot, save_analysis, load_latest_analysis
 from src.betting import recommend_bet
 from src.portfolio import load_portfolio, open_position, close_position, portfolio_summary
+from src.momentum_portfolio import (
+    load_portfolio as load_momentum_portfolio,
+    close_position as close_momentum_position,
+    portfolio_summary as momentum_portfolio_summary,
+)
 from src.live_portfolio import (
     load_live_portfolio,
     save_live_portfolio,
@@ -513,6 +518,31 @@ def cmd_portfolio(args):
     console.print(table)
 
 
+def cmd_momentum_portfolio(args):
+    """Show momentum paper portfolio."""
+    portfolio = load_momentum_portfolio()
+    text = momentum_portfolio_summary(portfolio)
+    console.print(Panel(text, title="[bold magenta]Momentum Paper Portfolio[/]", expand=False))
+
+
+def cmd_momentum_resolve(args):
+    """Close a momentum position manually."""
+    portfolio = load_momentum_portfolio()
+    try:
+        pos = close_momentum_position(portfolio, args.position_id, args.outcome, args.exit_price)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        return
+    color = "green" if pos["pnl"] >= 0 else "red"
+    console.print(
+        f"[bold]Momentum position resolved.[/]\n"
+        f"  ID:       {pos['id'][:8]}\n"
+        f"  Outcome:  {args.outcome.upper()}\n"
+        f"  P&L:      [{color}]{pos['pnl']:+.2f}[/{color}]\n"
+        f"  Bankroll: ${portfolio['bankroll']:.2f}"
+    )
+
+
 def cmd_resolve(args):
     portfolio = load_portfolio()
     try:
@@ -565,6 +595,7 @@ def cmd_live_bet(args):
             and (daily_pnl - amount) >= -limit
         )
 
+        price_str = f"{est_limit_price}¢ (est. ${est_cost:.2f})" if est_limit_price else "unknown"
         console.print(
             Panel(
                 f"  [bold]DRY RUN — no order placed[/]\n\n"
@@ -572,8 +603,7 @@ def cmd_live_bet(args):
                 f"  Ticker:      [dim]{ticker}[/]\n"
                 f"  Side:        [bold {'green' if side == 'yes' else 'red'}]{side}[/]\n"
                 f"  Count:       [bold]{count}[/] contracts\n"
-                f"  Limit price: [bold]{est_limit_price}¢[/]\n"
-                f"  Est. cost:   [bold]${est_cost:.2f}[/]\n\n"
+                f"  Limit price: [bold]{price_str}[/]\n\n"
                 f"  [bold]Safety checks:[/]\n"
                 f"    Kill switch:       [{'red' if ks_active else 'green'}]{'ACTIVE — ' + ks_reason if ks_active else 'off'}[/]\n"
                 f"    Position size:     [{'red' if amount > max_size else 'green'}]${amount:.2f} / max ${max_size:.2f}[/]\n"
@@ -939,6 +969,15 @@ def main():
     ks_group.add_argument("--deactivate", action="store_true", default=False)
     p_ks.add_argument("--reason", type=str, default=None, help="Reason for activation")
 
+    # momentum-portfolio
+    sub.add_parser("momentum-portfolio", help="Show momentum paper portfolio")
+
+    # momentum-resolve
+    p_mr = sub.add_parser("momentum-resolve", help="Close a momentum position with outcome")
+    p_mr.add_argument("position_id", help="Position ID or 8-char prefix")
+    p_mr.add_argument("--outcome", choices=["YES", "NO"], required=True)
+    p_mr.add_argument("--exit-price", type=float, required=True, dest="exit_price")
+
     # live-status
     sub.add_parser("live-status", help="Show kill switch, daily P&L, and Kalshi balance")
 
@@ -959,6 +998,8 @@ def main():
         "live-resolve": cmd_live_resolve,
         "kill-switch": cmd_kill_switch,
         "live-status": cmd_live_status,
+        "momentum-portfolio": cmd_momentum_portfolio,
+        "momentum-resolve": cmd_momentum_resolve,
     }
     dispatch[args.command](args)
 
