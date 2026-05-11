@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Momentum paper trading ledger.
 Completely separate from the regular paper portfolio (data/portfolio.json).
@@ -57,7 +58,7 @@ def _size_bet(signal: dict, bankroll: float) -> float:
     return round(min(raw, MAX_POSITION_SIZE), 2)
 
 
-def open_position(portfolio: dict, signal: dict) -> dict | None:
+def open_position(portfolio: dict, signal: dict) -> Optional[dict]:
     """
     Open a momentum paper position. Returns the position dict or None if
     the portfolio is full or bankroll is insufficient.

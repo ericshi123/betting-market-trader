@@ -1,0 +1,57 @@
+2026-05-10 22:44:28,885 INFO: WS Trader starting. PID=29189 mode=live
+2026-05-10 22:44:28,887 WARNING: Telegram ping failed: [Errno 2] No such file or directory: 'openclaw'
+2026-05-10 22:44:28,930 INFO: Connecting to Kalshi WebSocket...
+2026-05-10 22:44:29,053 INFO: Connected. Subscribing...
+2026-05-10 22:44:29,053 INFO: Subscribed to ticker channel
+2026-05-10 22:44:52,045 INFO: Shutdown signal received
+2026-05-10 22:44:52,074 INFO: WebSocket client stopped
+2026-05-10 22:44:57,208 INFO: WS Trader starting. PID=29210 mode=live
+2026-05-10 22:45:02,694 INFO: Connecting to Kalshi WebSocket...
+2026-05-10 22:45:02,805 INFO: Connected. Subscribing...
+2026-05-10 22:45:02,805 INFO: Subscribed to ticker channel
+2026-05-10 22:47:59,695 INFO: Shutdown signal received
+2026-05-10 22:47:59,723 INFO: WebSocket client stopped
+2026-05-10 22:48:04,861 INFO: WS Trader starting. PID=29389 mode=live
+2026-05-10 22:48:10,203 INFO: Connecting to Kalshi WebSocket...
+2026-05-10 22:48:10,322 INFO: Connected. Subscribing...
+2026-05-10 22:48:10,322 INFO: Subscribed to ticker channel
+2026-05-10 22:55:08,665 INFO: Shutdown signal received
+2026-05-10 22:55:08,690 INFO: WebSocket client stopped
+/Users/jojo/projects/betting-market-trader/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Traceback (most recent call last):
+  File "/Users/jojo/projects/betting-market-trader/scripts/ws_trader.py", line 34, in <module>
+    from src.ws_handler import WSHandler
+  File "/Users/jojo/projects/betting-market-trader/src/ws_handler.py", line 20, in <module>
+    from src.momentum_portfolio import load_portfolio, open_position
+  File "/Users/jojo/projects/betting-market-trader/src/momentum_portfolio.py", line 14, in <module>
+    import src.calibration as calibration
+  File "/Users/jojo/projects/betting-market-trader/src/calibration.py", line 35, in <module>
+    def _brier_for_bucket(records: list) -> float | None:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+/Users/jojo/projects/betting-market-trader/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Traceback (most recent call last):
+  File "/Users/jojo/projects/betting-market-trader/scripts/ws_trader.py", line 34, in <module>
+    from src.ws_handler import WSHandler
+  File "/Users/jojo/projects/betting-market-trader/src/ws_handler.py", line 20, in <module>
+    from src.momentum_portfolio import load_portfolio, open_position
+  File "/Users/jojo/projects/betting-market-trader/src/momentum_portfolio.py", line 14, in <module>
+    import src.calibration as calibration
+  File "/Users/jojo/projects/betting-market-trader/src/calibration.py", line 35, in <module>
+    def _brier_for_bucket(records: list) -> float | None:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+/Users/jojo/projects/betting-market-trader/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-05-10 22:55:34,648 INFO: WS Trader starting. PID=29774 mode=live
+2026-05-10 22:55:39,986 INFO: Connecting to Kalshi WebSocket...
+2026-05-10 22:55:40,140 INFO: Shutdown signal received
+2026-05-10 22:55:40,252 INFO: Connected. Subscribing...
+2026-05-10 22:55:40,252 INFO: Subscribed to ticker channel
+2026-05-10 22:55:40,282 INFO: WebSocket client stopped
+/Users/jojo/projects/betting-market-trader/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-05-10 22:55:40,957 INFO: WS Trader starting. PID=29791 mode=live
+2026-05-10 22:55:46,300 INFO: Connecting to Kalshi WebSocket...
+2026-05-10 22:55:46,406 INFO: Connected. Subscribing...
+2026-05-10 22:55:46,406 INFO: Subscribed to ticker channel

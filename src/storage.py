@@ -1,3 +1,4 @@
+from typing import Optional
 import json
 import os
 from datetime import date, datetime
@@ -28,7 +29,7 @@ def save_snapshot(markets: list[dict]) -> Path:
     return path
 
 
-def load_latest_snapshot() -> list[dict] | None:
+def load_latest_snapshot() -> Optional[list]:
     _ensure_dir()
     files = sorted(SNAPSHOTS_DIR.glob("*.json"), reverse=True)
     if not files:
@@ -54,7 +55,7 @@ def save_analysis(markets: list[dict]) -> Path:
     return path
 
 
-def load_latest_analysis() -> list[dict] | None:
+def load_latest_analysis() -> Optional[list]:
     _ensure_analysis_dir()
     files = sorted(ANALYSIS_DIR.glob("*.json"), reverse=True)
     if not files:

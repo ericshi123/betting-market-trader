@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Betting helpers: Kelly criterion sizing and bet recommendation.
 """
@@ -29,7 +30,7 @@ def kelly_fraction(edge: float, model_prob: float, market_prob: float) -> float:
     return min(max(quarter_kelly, 0.0), 0.20)
 
 
-def recommend_bet(market: dict, analyzed: dict, bankroll: float) -> dict | None:
+def recommend_bet(market: dict, analyzed: dict, bankroll: float) -> Optional[dict]:
     """
     Return a bet recommendation dict or None if criteria not met.
 

@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Auto-Resolve Checker — Phase 8
 Polls Kalshi for finalized markets and closes matching paper positions.
@@ -10,11 +11,11 @@ import src.portfolio as portfolio_mod
 from src.client import kalshi_get
 
 
-def _get_ticker(position: dict) -> str | None:
+def _get_ticker(position: dict) -> Optional[str]:
     return position.get("ticker") or position.get("market_id") or None
 
 
-def _fetch_market(ticker: str) -> dict | None:
+def _fetch_market(ticker: str) -> Optional[dict]:
     try:
         data = kalshi_get(f"/markets/{ticker}")
         return data.get("market") or data
@@ -22,7 +23,7 @@ def _fetch_market(ticker: str) -> dict | None:
         return None
 
 
-def _resolve_outcome(result: str | None) -> str | None:
+def _resolve_outcome(result: Optional[str]) -> Optional[str]:
     if result is None:
         return None
     r = result.lower()

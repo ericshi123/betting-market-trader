@@ -1,3 +1,4 @@
+from typing import Optional
 """
 News paper trading ledger.
 Completely separate from the regular and momentum portfolios.
@@ -52,7 +53,7 @@ def _size_bet(edge: float, bankroll: float) -> float:
     return round(min(raw, MAX_POSITION_SIZE), 2)
 
 
-def open_position(portfolio: dict, signal: dict) -> dict | None:
+def open_position(portfolio: dict, signal: dict) -> Optional[dict]:
     """
     Open a news paper position. Returns the position dict or None if
     the portfolio is full or bankroll is insufficient.

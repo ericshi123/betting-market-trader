@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Calibration tracker: records resolved positions and computes prediction accuracy metrics.
 """
@@ -32,7 +33,7 @@ def _derive_outcome(pos: dict) -> str:
     return "NO" if pnl >= 0 else "YES"
 
 
-def _brier_for_bucket(records: list) -> float | None:
+def _brier_for_bucket(records: list) -> Optional[float]:
     """Brier score for records that have model_prob. Returns None if no calibratable records."""
     calibratable = [r for r in records if r.get("model_prob") is not None]
     if not calibratable:
