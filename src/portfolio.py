@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import src.calibration as calibration
+
 _PORTFOLIO_PATH = Path(__file__).parent.parent / "data" / "portfolio.json"
 
 _DEFAULT_PORTFOLIO = {
@@ -98,6 +100,10 @@ def close_position(
     portfolio["bankroll"] = round(portfolio["bankroll"] + amount + pnl, 2)
     portfolio["closed_pnl"] = round(portfolio.get("closed_pnl", 0.0) + pnl, 2)
     save_portfolio(portfolio)
+    try:
+        calibration.record_resolution(match, "paper")
+    except Exception:
+        pass
     return match
 
 

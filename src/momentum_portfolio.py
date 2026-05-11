@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import src.calibration as calibration
+
 _PORTFOLIO_PATH = Path(__file__).parent.parent / "data" / "momentum_portfolio.json"
 
 STARTING_BANKROLL = 1000.0
@@ -142,6 +144,10 @@ def close_position(
         portfolio["bankroll"],
     )
     save_portfolio(portfolio)
+    try:
+        calibration.record_resolution(match, "momentum")
+    except Exception:
+        pass
     return match
 
 

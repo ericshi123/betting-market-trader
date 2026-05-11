@@ -1,197 +1,134 @@
 #!/usr/bin/env python3
 """
-Backtest Claude's prediction accuracy on resolved Polymarket markets.
-Usage: python scripts/backtest.py --limit 30 --days-back 90 --min-volume 10000
+Snapshot-based momentum strategy backtester.
+
+Replays consecutive daily snapshots from data/snapshots/ and simulates the
+momentum strategy: enter on 5pp+ price moves, exit at the next snapshot price.
+
+Note: simplified backtest using daily snapshot prices — does not model order
+flow, slippage, or intraday resolution. Treat results as directional only.
+
+Usage: python scripts/backtest.py
 """
-import argparse
 import json
+import math
 import os
 import sys
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import requests
-
-from src.analyzer import estimate_probability
+SNAPSHOTS_DIR = PROJECT_ROOT / "data" / "snapshots"
+MIN_DELTA_PP = 0.05  # 5 percentage points
 
 
-def fetch_resolved_markets(days_back=90, min_volume=10000, limit=50):
-    """Fetch recently resolved binary markets."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+def load_snapshots() -> list[dict]:
+    """Load all snapshot files sorted by filename (YYYY-MM-DD.json)."""
+    if not SNAPSHOTS_DIR.exists():
+        return []
+    files = sorted(SNAPSHOTS_DIR.glob("*.json"))
+    snapshots = []
+    for f in files:
+        with open(f) as fh:
+            data = json.load(fh)
+        markets = {m["market_id"]: m for m in data.get("markets", [])}
+        snapshots.append({"date": data.get("date", f.stem), "markets": markets})
+    return snapshots
 
-    r = requests.get(
-        "https://gamma-api.polymarket.com/events",
-        params={"closed": "true", "limit": 300, "order": "volume", "ascending": "false"},
-    )
-    r.raise_for_status()
-    events = r.json()
 
-    markets = []
-    for event in events:
-        # Take at most ONE market per event to avoid correlated batches
-        # (e.g. all 32 "Will [team] win Super Bowl" from the same event)
-        event_markets = event.get("markets", [])
-        added_for_event = 0
-        for m in event_markets:
-            op = m.get("outcomePrices", [])
-            try:
-                prices = [float(p) for p in (op if isinstance(op, list) else json.loads(op))]
-            except Exception:
-                continue
-            if len(prices) != 2:
-                continue
+def simulate_momentum(snapshots: list[dict]) -> list[dict]:
+    """
+    For each consecutive snapshot pair, simulate momentum trades.
+    Enter when |yes_price delta| >= MIN_DELTA_PP; exit at next snapshot price.
+    """
+    trades = []
+    for i in range(len(snapshots) - 1):
+        snap_a = snapshots[i]
+        snap_b = snapshots[i + 1]
+        shared = set(snap_a["markets"]) & set(snap_b["markets"])
 
-            if prices[0] >= 0.99:
-                actual_outcome = 1
-            elif prices[0] <= 0.01:
-                actual_outcome = 0
-            else:
+        for market_id in shared:
+            m_a = snap_a["markets"][market_id]
+            m_b = snap_b["markets"][market_id]
+            price_a = m_a.get("yes_price", 0.0)
+            price_b = m_b.get("yes_price", 0.0)
+            delta = price_b - price_a
+
+            if abs(delta) < MIN_DELTA_PP:
                 continue
 
-            try:
-                vol = float(m.get("volume") or 0)
-            except Exception:
-                vol = 0
-            if vol < min_volume:
-                continue
+            direction = "BUY_YES" if delta > 0 else "BUY_NO"
+            entry = price_a if direction == "BUY_YES" else (1.0 - price_a)
+            exit_p = price_b if direction == "BUY_YES" else (1.0 - price_b)
 
-            end_date_str = m.get("endDate") or m.get("endDateIso") or ""
-            try:
-                end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                if end_dt < cutoff:
-                    continue
-            except Exception:
-                continue
+            pnl_pct = (exit_p - entry) / entry if entry > 0 else 0.0
 
-            markets.append({
-                "market_id": m.get("conditionId", ""),
-                "question": m.get("question", ""),
-                "description": m.get("description", ""),
-                "end_date": end_date_str[:10],
-                "volume": vol,
-                "yes_price": None,  # blind test — do not leak resolved price
-                "actual_outcome": actual_outcome,
+            trades.append({
+                "date_from": snap_a["date"],
+                "date_to": snap_b["date"],
+                "market_id": market_id,
+                "question": m_a.get("question", "")[:60],
+                "direction": direction,
+                "delta_pp": round(delta * 100, 2),
+                "entry": round(entry, 4),
+                "exit": round(exit_p, 4),
+                "pnl_pct": round(pnl_pct, 4),
+                "win": pnl_pct > 0,
             })
-            added_for_event += 1
-            break  # one market per event — prevents correlated batches
-
-            if len(markets) >= limit:
-                return markets
-    return markets
+    return trades
 
 
-def compute_simulated_pnl(results):
-    """
-    Simulate betting $25 at a hypothetical 50% market price using half-Kelly.
-    Kelly fraction = (p - 0.5) / 0.5  (b=1 for even-money bet).
-    Bet = $25 * Kelly (floored at 0).
-    """
-    total_pnl = 0.0
-    for r in results:
-        p = r["model_prob"]
-        if p is None:
-            continue
-        kelly = (p - 0.5) / 0.5
-        bet = 25.0 * max(kelly, 0.0)
-        outcome = r["actual_outcome"]
-        if bet > 0:
-            total_pnl += bet if outcome == 1 else -bet
-    return total_pnl
+def _sharpe(returns: list[float]) -> float:
+    """Annualized Sharpe from daily per-trade returns."""
+    if len(returns) < 2:
+        return 0.0
+    n = len(returns)
+    mean = sum(returns) / n
+    variance = sum((r - mean) ** 2 for r in returns) / (n - 1)
+    std = math.sqrt(variance) if variance > 0 else 0.0
+    return round((mean / std) * math.sqrt(252), 2) if std > 0 else 0.0
 
 
-def run_backtest(limit=30, days_back=90, min_volume=10000):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    print(f"=== Polymarket Backtest — {today} ===")
-    print(f"Fetching up to {limit} resolved markets (last {days_back} days, vol >= ${min_volume:,})...")
+def print_summary(trades: list[dict]) -> None:
+    n = len(trades)
+    if n == 0:
+        print("No qualifying trades found (no 5pp+ price moves across snapshot pairs).")
+        return
+    wins = sum(1 for t in trades if t["win"])
+    win_rate = wins / n
+    total_pnl = sum(t["pnl_pct"] for t in trades)
+    s = _sharpe([t["pnl_pct"] for t in trades])
 
-    markets = fetch_resolved_markets(days_back=days_back, min_volume=min_volume, limit=limit)
-    print(f"Found {len(markets)} qualifying markets. Analyzing...\n")
-
-    results = []
-    for i, market in enumerate(markets):
-        result = estimate_probability(market)
-        model_prob = result.get("model_prob")
-        actual_outcome = market["actual_outcome"]
-
-        correct = None
-        if model_prob is not None:
-            correct = (model_prob > 0.5) == (actual_outcome == 1)
-
-        results.append({
-            "question": market["question"],
-            "end_date": market["end_date"],
-            "volume": market["volume"],
-            "model_prob": model_prob,
-            "confidence": result.get("confidence"),
-            "actual_outcome": actual_outcome,
-            "correct": correct,
-            "rationale": result.get("rationale", ""),
-        })
-
-        if i < len(markets) - 1:
-            time.sleep(1)
-
-    # Stats
-    scored = [r for r in results if r["correct"] is not None]
-    n = len(scored)
-    accuracy = sum(r["correct"] for r in scored) / n if n else 0.0
-    brier = (
-        sum((r["model_prob"] - r["actual_outcome"]) ** 2 for r in scored) / n
-        if n else 0.25
+    print(f"\n{'Strategy':<15} {'Trades':>7} {'Win Rate':>9} {'Total PnL':>10} {'Sharpe':>8}")
+    print("-" * 55)
+    print(
+        f"{'Momentum':15} {n:7d} {win_rate*100:8.1f}% "
+        f"{total_pnl*100:+9.1f}pp {s:8.2f}"
     )
-    simulated_pnl = compute_simulated_pnl(scored)
-
-    # Print results table
-    print("Results:")
-    for r in results:
-        mark = "✓" if r["correct"] else ("✗" if r["correct"] is not None else "?")
-        outcome_label = "YES" if r["actual_outcome"] == 1 else "NO"
-        prob_pct = f"{r['model_prob'] * 100:.0f}%" if r["model_prob"] is not None else "N/A"
-        question_trunc = r["question"][:70] + ("..." if len(r["question"]) > 70 else "")
-        print(f"  {mark} [{outcome_label}]  \"{question_trunc}\" — model: {prob_pct}, outcome: {outcome_label}")
-
     print()
-    print(f"Markets tested: {n}")
-    print(f"Accuracy: {accuracy * 100:.1f}% (baseline: 50.0%)")
-    print(f"Brier score: {brier:.3f} (baseline: 0.250, lower is better)")
-    print(f"Simulated P&L (vs 50% market): ${simulated_pnl:.2f}")
-    print()
-    print("⚠️  Contamination warning: Claude's training data may include outcomes for")
-    print("    markets resolved before its training cutoff. Results may overstate real edge.")
-    print("    Weight recent markets (last 30 days) more heavily.")
-
-    # Save report
-    out_dir = Path("data/backtest")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{today}.json"
-    report = {
-        "date": today,
-        "markets_tested": n,
-        "accuracy": accuracy,
-        "brier_score": brier,
-        "simulated_pnl": simulated_pnl,
-        "results": results,
-    }
-    out_path.write_text(json.dumps(report, indent=2))
-    print(f"\nReport saved to {out_path}")
+    print("Note: simplified backtest using daily snapshot prices.")
+    print("Does not model slippage, order flow, or intraday resolution.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest Claude predictions on resolved Polymarket markets.")
-    parser.add_argument("--limit", type=int, default=30, help="Max markets to test (default: 30)")
-    parser.add_argument("--days-back", type=int, default=90, help="Look back window in days (default: 90)")
-    parser.add_argument("--min-volume", type=int, default=10000, help="Min USD volume filter (default: 10000)")
-    args = parser.parse_args()
+    print("=== Snapshot Momentum Backtester ===")
+    print(f"Snapshot dir: {SNAPSHOTS_DIR}")
 
-    run_backtest(limit=args.limit, days_back=args.days_back, min_volume=args.min_volume)
+    snapshots = load_snapshots()
+    print(f"Snapshots loaded: {len(snapshots)}")
+
+    if len(snapshots) < 2:
+        print(
+            "Insufficient snapshots (need 2+). "
+            "Accumulate daily snapshots to run a meaningful backtest."
+        )
+        return
+
+    trades = simulate_momentum(snapshots)
+    print(f"Trades simulated: {len(trades)}")
+    print_summary(trades)
 
 
 if __name__ == "__main__":
