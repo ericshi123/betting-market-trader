@@ -8,14 +8,18 @@ Decision flow for each price update:
   4. Ask Claude for probability estimate
   5. Skip if edge < MIN_EDGE (8pp) or confidence is low
   6. Open a momentum paper position
+
+After each event, the handler also runs correlation arbitrage detection against
+all currently cached prices and logs any divergences found.
 """
 
 import logging
 import time
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 from src.analyzer import estimate_probability
 from src.client import kalshi_get
+from src.correlation import detect_divergence
 from src.markets import _parse_market
 from src.momentum_portfolio import load_portfolio, open_position
 
@@ -26,12 +30,17 @@ DEDUPE_WINDOW_S = 1800     # 30-minute cooldown per ticker
 MIN_EDGE = 0.08            # 8pp minimum model vs. market divergence
 _HIGH_CONFIDENCE = {"medium", "high"}
 
+# Dedupe window for correlation arb pairs (don't re-log same pair within 1 hour)
+_CORR_DEDUPE_WINDOW_S = 3600
+
 
 class WSHandler:
     """Stateful handler that evaluates price update events and places paper trades."""
 
     def __init__(self):
-        self._last_eval: dict[str, float] = {}  # ticker -> epoch seconds of last evaluation
+        self._last_eval: Dict[str, float] = {}  # ticker -> epoch seconds of last evaluation
+        self._price_cache: Dict[str, float] = {}  # ticker -> latest yes_price
+        self._last_corr_eval: Dict[Tuple[str, str], float] = {}  # pair -> last logged epoch
 
     def handle(self, event: dict) -> dict:
         """
@@ -42,6 +51,9 @@ class WSHandler:
         delta = event["delta"]
         yes_price = event["yes_price"]
         prev_yes_price = event.get("prev_yes_price", yes_price)
+
+        # Always update price cache for correlation tracking
+        self._price_cache[ticker] = yes_price
 
         # ── 1. Delta threshold ────────────────────────────────────────────────
         if abs(delta) < MIN_TRIGGER_DELTA:
@@ -143,6 +155,10 @@ class WSHandler:
             "TRADE %s %s: edge=%.3f conf=%s amount=$%.2f entry=%.2f",
             direction, ticker, edge, confidence, position["amount"], entry_price,
         )
+
+        # Run correlation arbitrage scan after any significant price move
+        self._check_correlation()
+
         return {
             "action": "trade",
             "direction": direction,
@@ -152,3 +168,45 @@ class WSHandler:
             "position": position,
             "analysis": analysis,
         }
+
+    def _check_correlation(self) -> List[dict]:
+        """
+        Run detect_divergence against the current price cache.
+        Logs new divergences and deduplicates within _CORR_DEDUPE_WINDOW_S.
+        Returns the list of new divergences found.
+        """
+        if len(self._price_cache) < 2:
+            return []
+
+        markets = [
+            {"ticker": t, "market_id": t, "yes_price": p}
+            for t, p in self._price_cache.items()
+        ]
+
+        try:
+            divergences = detect_divergence(markets)
+        except Exception as exc:
+            logger.warning("Correlation scan error: %s", exc)
+            return []
+
+        now = time.time()
+        new_divergences = []
+
+        for div in divergences:
+            pair_key: Tuple[str, str] = (
+                min(div["ticker_a"], div["ticker_b"]),
+                max(div["ticker_a"], div["ticker_b"]),
+            )
+            last = self._last_corr_eval.get(pair_key, 0.0)
+            if now - last < _CORR_DEDUPE_WINDOW_S:
+                continue
+
+            self._last_corr_eval[pair_key] = now
+            new_divergences.append(div)
+            logger.info(
+                "CORR-ARB %s ↔ %s: divergence=%.1fpp arb_side=%s (price_a=%.2f price_b=%.2f)",
+                div["ticker_a"], div["ticker_b"], div["divergence_pp"],
+                div["arb_side"], div["price_a"], div["price_b"],
+            )
+
+        return new_divergences
