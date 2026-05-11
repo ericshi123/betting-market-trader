@@ -1,3 +1,4 @@
+from typing import Optional
 """
 News feed monitor — polls RSS feeds and matches headlines to Kalshi markets.
 Tracks seen URLs in data/news_seen.json to avoid reprocessing.
@@ -50,7 +51,7 @@ def _save_seen(seen: set[str]) -> None:
         json.dump(list(seen), f)
 
 
-def _parse_published(entry) -> datetime | None:
+def _parse_published(entry) -> Optional[datetime]:
     """Parse the published time from a feedparser entry. Returns UTC datetime or None."""
     for attr in ("published", "updated"):
         raw = getattr(entry, attr, None)
