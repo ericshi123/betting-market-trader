@@ -14,6 +14,7 @@ Run from project root:
 """
 
 import os
+import shutil
 import sys
 import subprocess
 from datetime import datetime, timezone
@@ -38,10 +39,16 @@ TELEGRAM_TARGET = "8740704554"
 
 
 def _ping_telegram(message: str) -> None:
+    openclaw_bin = "/opt/homebrew/bin/openclaw"
+    if not os.path.exists(openclaw_bin):
+        openclaw_bin = shutil.which("openclaw") or ""
+    if not openclaw_bin:
+        print("[warn] openclaw binary not found, skipping Telegram ping")
+        return
     try:
         subprocess.run(
             [
-                "openclaw", "message", "send",
+                openclaw_bin, "message", "send",
                 "--channel", "telegram",
                 "--target", TELEGRAM_TARGET,
                 "--message", message,

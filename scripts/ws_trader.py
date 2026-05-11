@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import os
 import signal
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -59,10 +60,16 @@ def _setup_logging() -> None:
 
 
 def _ping_telegram(message: str) -> None:
+    openclaw_bin = "/opt/homebrew/bin/openclaw"
+    if not os.path.exists(openclaw_bin):
+        openclaw_bin = shutil.which("openclaw") or ""
+    if not openclaw_bin:
+        logger.warning("openclaw binary not found, skipping Telegram ping")
+        return
     try:
         subprocess.run(
             [
-                "openclaw", "message", "send",
+                openclaw_bin, "message", "send",
                 "--channel", "telegram",
                 "--target", TELEGRAM_TARGET,
                 "--message", message,

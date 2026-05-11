@@ -6,6 +6,7 @@ Run every 15 minutes via cron.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -25,18 +26,19 @@ TELEGRAM_TARGET = "8740704554"
 
 
 def _ping_telegram(message: str) -> None:
+    openclaw_bin = "/opt/homebrew/bin/openclaw"
+    if not os.path.exists(openclaw_bin):
+        openclaw_bin = shutil.which("openclaw") or ""
+    if not openclaw_bin:
+        print("[warn] openclaw binary not found, skipping Telegram ping")
+        return
     try:
         subprocess.run(
             [
-                "openclaw",
-                "message",
-                "send",
-                "--channel",
-                "telegram",
-                "--target",
-                TELEGRAM_TARGET,
-                "--message",
-                message,
+                openclaw_bin, "message", "send",
+                "--channel", "telegram",
+                "--target", TELEGRAM_TARGET,
+                "--message", message,
             ],
             check=True,
             capture_output=True,
