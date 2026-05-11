@@ -2,6 +2,8 @@ import os
 import re
 from dotenv import load_dotenv
 
+from src.enricher import enrich_market
+
 load_dotenv()
 
 _client = None
@@ -34,6 +36,7 @@ def estimate_probability(market: dict) -> dict:
     Ask Claude to estimate the YES resolution probability for a market.
     Returns dict with: model_prob (float|None), confidence (str), rationale (str), reasoning (str).
     """
+    market = enrich_market(market)
     client = _get_client()
 
     question = market.get("question", "")
@@ -45,12 +48,15 @@ def estimate_probability(market: dict) -> dict:
     market_pct = f"{yes_price * 100:.1f}%" if yes_price is not None else "unknown"
     desc_block = f"\nDescription: {description}" if description else ""
 
+    search_context = market.get("search_context", "")
+    context_block = f"\n\nRecent context:\n{search_context}" if search_context else ""
+
     user_msg = f"""Predict the probability this prediction market resolves YES.
 
 Question: {question}
 Resolution date: {end_date}
 Current market-implied probability (Yes): {market_pct}
-Total volume traded: ${volume:,.0f}{desc_block}
+Total volume traded: ${volume:,.0f}{desc_block}{context_block}
 
 Reason step-by-step, then give your estimate.
 
