@@ -153,7 +153,6 @@ def run_momentum_scan() -> tuple[list[dict], list[dict], Path]:
         min_volume=MIN_VOLUME,
         min_yes_price=MIN_YES_PRICE,
         max_yes_price=MAX_YES_PRICE,
-        days_to_close=None,
     )
 
     snapshot_path = _save_momentum_snapshot(markets)
